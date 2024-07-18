@@ -7,7 +7,8 @@ import clone from 'clone';
 import express from 'express';
 import { validateStyleMin } from '@maplibre/maplibre-gl-style-spec';
 
-import { fixUrl, allowedOptions } from './utils.js';
+import { allowedOptions, fixUrl } from './utils.js';
+import fsp from 'node:fs/promises';
 
 const httpTester = /^https?:\/\//i;
 const allowedSpriteScales = allowedOptions(['', '@2x', '@3x']);
@@ -45,35 +46,35 @@ export const serve_style = {
 
     app.get(
       '/:id/sprite(/:spriteID)?:scale(@[23]x)?.:format([\\w]+)',
-      (req, res, next) => {
+      async (req, res, next) => {
         const { spriteID = 'default', id } = req.params;
         const scale = allowedSpriteScales(req.params.scale) || '';
         const format = allowedSpriteFormats(req.params.format);
 
-        if (format) {
-          const item = repo[id];
-          const sprite = item.spritePaths.find(
-            (sprite) => sprite.id === spriteID,
-          );
-          if (sprite) {
-            const filename = `${sprite.path + scale}.${format}`;
-            return fs.readFile(filename, (err, data) => {
-              if (err) {
-                console.log('Sprite load error:', filename);
-                return res.sendStatus(404);
-              } else {
-                if (format === 'json')
-                  res.header('Content-type', 'application/json');
-                if (format === 'png') res.header('Content-type', 'image/png');
-                return res.send(data);
-              }
-            });
-          } else {
-            return res.status(400).send('Bad Sprite ID or Scale');
-          }
-        } else {
+        if (!format) {
           return res.status(400).send('Bad Sprite Format');
         }
+        const sprite = repo[id].spritePaths.find(
+          (sprite) => sprite.id === spriteID,
+        );
+        if (!sprite) {
+          return res.status(400).send('Bad Sprite ID or Scale');
+        }
+        const filename = `${sprite.path + scale}.${format}`;
+        let data;
+        try {
+          data = await fsp.readFile(filename);
+        } catch (err) {
+          console.log('Sprite load error:', filename, err);
+          return res.sendStatus(404);
+        }
+        if (format === 'json') {
+          res.header('Content-type', 'application/json');
+        }
+        if (format === 'png') {
+          res.header('Content-type', 'image/png');
+        }
+        return res.send(data);
       },
     );
 

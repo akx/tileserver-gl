@@ -20,8 +20,9 @@ import { serve_data } from './serve_data.js';
 import { serve_style } from './serve_style.js';
 import { serve_font } from './serve_font.js';
 import { getTileUrls, getPublicUrl, isValidHttpUrl } from './utils.js';
-
 import { fileURLToPath } from 'url';
+import fsp from 'node:fs/promises';
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const packageJson = JSON.parse(
@@ -403,7 +404,7 @@ function start(opts) {
   app.use('/', express.static(path.join(__dirname, '../public/resources')));
 
   const templates = path.join(__dirname, '../public/templates');
-  const serveTemplate = (urlPath, template, dataGetter) => {
+  const _serveTemplate = async (urlPath, template, dataGetter) => {
     let templateFile = `${templates}/${template}.tmpl`;
     if (template === 'index') {
       if (options.frontPage === false) {
@@ -415,41 +416,38 @@ function start(opts) {
         templateFile = path.resolve(paths.root, options.frontPage);
       }
     }
-    startupPromises.push(
-      new Promise((resolve, reject) => {
-        fs.readFile(templateFile, (err, content) => {
-          if (err) {
-            err = new Error(`Template not found: ${err.message}`);
-            reject(err);
-            return;
-          }
-          const compiled = handlebars.compile(content.toString());
+    let content;
+    try {
+      content = await fsp.readFile(templateFile, 'utf-8');
+    } catch (err) {
+      throw new Error(`Template not found: ${err.message}`);
+    }
+    const compiled = handlebars.compile(content);
 
-          app.use(urlPath, (req, res, next) => {
-            let data = {};
-            if (dataGetter) {
-              data = dataGetter(req);
-              if (!data) {
-                return res.status(404).send('Not found');
-              }
-            }
-            data['server_version'] =
-              `${packageJson.name} v${packageJson.version}`;
-            data['public_url'] = opts.publicUrl || '/';
-            data['is_light'] = isLight;
-            data['key_query_part'] = req.query.key
-              ? `key=${encodeURIComponent(req.query.key)}&amp;`
-              : '';
-            data['key_query'] = req.query.key
-              ? `?key=${encodeURIComponent(req.query.key)}`
-              : '';
-            if (template === 'wmts') res.set('Content-Type', 'text/xml');
-            return res.status(200).send(compiled(data));
-          });
-          resolve();
-        });
-      }),
-    );
+    app.use(urlPath, (req, res) => {
+      let data = {};
+      if (dataGetter) {
+        data = dataGetter(req);
+        if (!data) {
+          return res.status(404).send('Not found');
+        }
+      }
+      const keyQuery = req.query.key
+        ? `?key=${encodeURIComponent(req.query.key)}`
+        : '';
+      Object.assign(data, {
+        public_url: opts.publicUrl || '/',
+        server_version: `${packageJson.name} v${packageJson.version}`,
+        is_light: isLight,
+        key_query_part: keyQuery ? keyQuery + '&amp;' : '',
+        key_query: keyQuery,
+      });
+      if (template === 'wmts') res.set('Content-Type', 'text/xml');
+      return res.status(200).send(compiled(data));
+    });
+  };
+  const serveTemplate = (urlPath, template, dataGetter) => {
+    startupPromises.push(_serveTemplate(urlPath, template, dataGetter));
   };
 
   serveTemplate('/$', 'index', (req) => {
